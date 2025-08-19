@@ -434,12 +434,16 @@ public class RouteService {
 
             com.fasterxml.jackson.databind.JsonNode stations = root.path("station_list").path("stations");
             if (stations.isArray() && stations.size() > 0) {
+                // Return the first (closest) station for the charging route logic
+                // But we'll add all stations to a separate list for frontend display
                 com.fasterxml.jackson.databind.JsonNode firstStation = stations.get(0);
 
                 double stationLat = firstStation.path("lat").asDouble(firstStation.path("latitude").asDouble());
                 double stationLon = firstStation.path("lon").asDouble(firstStation.path("longitude").asDouble());
                 String stationName = firstStation.path("name").asText(
-                        firstStation.path("station_name").asText("ChargePoint Station")
+                        firstStation.path("station_name").asText(
+                            firstStation.path("name1").asText("ChargePoint Station")
+                        )
                 );
                 Integer deviceId = firstStation.path("device_id").asInt(0);
 
@@ -448,7 +452,29 @@ public class RouteService {
                 stop.setLon(stationLon);
                 stop.setStationName(stationName);
                 stop.setDistanceFromRoutePointMiles(haversineMiles(lat, lon, stationLat, stationLon));
-                stop.setDeviceId(deviceId); // Set the device_id from API response
+                stop.setDeviceId(deviceId);
+
+                // Store the complete raw station data for the primary station
+                try {
+                    Object rawFirstStation = objectMapper.treeToValue(firstStation, Object.class);
+                    stop.setRawStationData(rawFirstStation);
+                } catch (Exception e) {
+                    System.err.println("Error converting first station to raw data: " + e.getMessage());
+                }
+
+                // Store all raw stations for this search location
+                List<Object> allRawStations = new ArrayList<>();
+                for (com.fasterxml.jackson.databind.JsonNode station : stations) {
+                    try {
+                        Object rawStation = objectMapper.treeToValue(station, Object.class);
+                        allRawStations.add(rawStation);
+                    } catch (Exception e) {
+                        System.err.println("Error converting station to raw data: " + e.getMessage());
+                    }
+                }
+
+                // Add all raw stations to the main stop for reference
+                stop.setAllRawStations(allRawStations);
                 return stop;
             }
 

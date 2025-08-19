@@ -34,6 +34,8 @@ public class FindResponse {
         private String stationName;
         private double distanceFromRoutePointMiles;
         private Integer deviceId; // Add device_id from ChargePoint API
+        private Object rawStationData; // Store the complete raw station data from API
+        private List<Object> allRawStations = new ArrayList<>(); // All raw stations found at this search location
     }
 
     @Data
