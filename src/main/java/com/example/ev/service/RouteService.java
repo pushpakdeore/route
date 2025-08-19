@@ -26,9 +26,6 @@ public class RouteService {
     @Value("${ev.bufferPercent:0.30}")
     private double bufferPercent;
 
-    @Value("${ev.chargePercent:0.80}")
-    private double chargePercent;
-
     private final double KM_PER_MILE = 1.609344;
 
     public FindResponse findChargingPlan(FindRequest req) throws Exception {
@@ -63,15 +60,21 @@ public class RouteService {
         ));
 
         // Check if destination is reachable without charging
-        // Compare effective range (with buffer) against total distance
+        // Compare effective range (with buffer) against total distance for safety check
         if (effectiveRange >= totalMiles) {
+            // Can reach destination without charging
+            // But calculate remaining range and SOC based on actual current range, not effective range
+            double actualRemainingRange = currentRange - totalMiles;
             response.setReachableWithoutCharging(true);
-            response.setRemainingRangeAfterRoute(effectiveRange - totalMiles);
+            response.setRemainingRangeAfterRoute(actualRemainingRange);
+
+            // Calculate final SOC at destination based on actual current range
+            double finalSOC = calculateFinalSOC(currentSoc, currentRange, totalMiles, fullRange);
+            response.setFinalSOCAtDestination(finalSOC);
 
             // Add intermediate stops to route sequence if any
             if (req.getIntermediates() != null) {
-                for (int i = 0; i < req.getIntermediates().size(); i++) {
-                    FindRequest.LatLng intermediate = req.getIntermediates().get(i);
+                for (FindRequest.LatLng intermediate : req.getIntermediates()) {
                     response.getRouteSequence().add(new FindResponse.RoutePoint(
                         intermediate.latitude, intermediate.longitude, "intermediate"
                     ));
@@ -92,6 +95,17 @@ public class RouteService {
             new ArrayList<>(req.getIntermediates()) : new ArrayList<>();
 
         return findChargingStopsRecursively(req, polyline, effectiveRange, fullRange, response, remainingIntermediates);
+    }
+
+    /**
+     * Calculate final SOC percentage when vehicle reaches destination
+     */
+    private double calculateFinalSOC(double startSOC, double startRange, double distanceTraveled, double fullRange) {
+        // Calculate remaining range after travel
+        double remainingRange = startRange - distanceTraveled;
+        // Convert remaining range to SOC percentage
+        double finalSOC = (remainingRange / fullRange) * 100.0;
+        return Math.max(0.0, finalSOC); // Ensure not negative
     }
 
     private FindResponse findChargingStopsRecursively(FindRequest req, List<double[]> polyline,
@@ -126,12 +140,26 @@ public class RouteService {
 
                 // Cannot reach current point, search for charging station at last reachable point
                 double[] searchPoint = polyline.get(lastReachableIndex);
+
+                // Calculate battery percentage when reaching this charging station
+                double distanceToStation = 0;
+                for (int k = 1; k <= lastReachableIndex; k++) {
+                    double[] prev = polyline.get(k - 1);
+                    double[] curr = polyline.get(k);
+                    distanceToStation += haversineMiles(prev[0], prev[1], curr[0], curr[1]);
+                }
+
+                // Calculate remaining range and battery percentage at station
+                double remainingRangeAtStation = req.getCurrentRangeMiles() - distanceToStation;
+                double batteryPercentageOnArrival = (remainingRangeAtStation / fullRange) * 100.0;
+                // Apply buffer consideration - if we're using effective range, the actual battery % will be higher
+
                 FindResponse.Stop chargingStation = searchForChargingStation(searchPoint[0], searchPoint[1]);
 
                 if (chargingStation == null) {
                     // No station found, try previous polyline points with distance-based search to avoid gaps
                     // Instead of skipping fixed number of points, skip based on distance to ensure coverage
-                    double searchRadiusKm = 10.0; // Our search radius is 10km (7km half-radius × 2)
+                    double searchRadiusKm = 14.0; // Our search radius is 10km (7km half-radius × 2)
                     double maxGapKm = searchRadiusKm * 0.8; // Allow 80% overlap (8km gaps max)
 
                     double accumulatedDistance = 0;
@@ -148,8 +176,6 @@ public class RouteService {
                         if (accumulatedDistance >= maxGapKm) {
                             chargingStation = searchForChargingStation(currentSearchPoint[0], currentSearchPoint[1]);
                             if (chargingStation != null) {
-                                System.out.println("Found charging station at polyline point " + j +
-                                    " (distance gap: " + String.format("%.2f", accumulatedDistance) + " km)");
                                 break;
                             }
                         }
@@ -165,6 +191,10 @@ public class RouteService {
                     ));
                     return response;
                 }
+
+                // Set battery percentage information for this charging station
+                chargingStation.setBatteryPercentageOnArrival(Math.max(0.0, batteryPercentageOnArrival)); // Ensure not negative
+                chargingStation.setBatteryPercentageAfterCharging(90.0); // Always charge to 90%
 
                 response.getStops().add(chargingStation);
 
@@ -186,12 +216,13 @@ public class RouteService {
                     newRequest.setIntermediates(new ArrayList<>(remainingIntermediates));
                 }
 
-                // After charging, range is restored to fullRange * chargePercent with buffer applied
-                double newRange = fullRange * chargePercent;
-                double newEffectiveRange = newRange * (1 - bufferPercent);
+                // After charging, EV manufacturers recommend charging only up to 90% for battery health
+                // So range after charging = fullRange * 0.90, then apply 30% buffer for safety
+                double newRange = fullRange * 0.90; // Charge to 90% of full capacity
+                double newEffectiveRange = newRange * (1 - bufferPercent); // Apply 30% buffer
                 newRequest.setCurrentRangeMiles(newRange);
-                // Set SOC to chargePercent * 100 (e.g., 80% charge)
-                newRequest.setSoc(chargePercent * 100);
+                // Set SOC to 90% (recommended max charge level)
+                newRequest.setSoc(90.0);
 
                 // Get new route from station to destination (with remaining intermediates)
                 Map<String, Object> newRouteData = callGoogleRoutesApi(newRequest);
@@ -206,7 +237,12 @@ public class RouteService {
                 if (newEffectiveRange >= remainingMiles) {
                     // Can reach destination from this charging station
                     response.setReachableWithoutCharging(true);
-                    response.setRemainingRangeAfterRoute(newEffectiveRange - remainingMiles);
+                    // Use actual newRange (not newEffectiveRange) for consistent calculation
+                    response.setRemainingRangeAfterRoute(newRange - remainingMiles);
+
+                    // Calculate final SOC at destination
+                    double finalSOC = calculateFinalSOC(90.0, newRange, remainingMiles, fullRange);
+                    response.setFinalSOCAtDestination(finalSOC);
 
                     // Add any remaining intermediate stops to route sequence
                     if (remainingIntermediates != null) {
@@ -231,6 +267,7 @@ public class RouteService {
         }
 
         // If we reach here, the route is complete without needing more charging
+        // This means we've traversed the entire polyline within our effective range
         // Add any remaining intermediate stops that were reached
         for (FindRequest.LatLng reached : reachedIntermediates) {
             response.getRouteSequence().add(new FindResponse.RoutePoint(

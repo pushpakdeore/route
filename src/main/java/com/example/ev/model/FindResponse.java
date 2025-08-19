@@ -12,6 +12,7 @@ public class FindResponse {
     private boolean reachableWithoutCharging;
     private double totalRouteDistanceMiles;
     private double remainingRangeAfterRoute;
+    private Double finalSOCAtDestination; // SOC percentage when vehicle reaches destination
     private List<Stop> stops = new ArrayList<>();
     private String encodedPolyline; // Add encoded polyline to response
     private List<RoutePoint> routeSequence = new ArrayList<>(); // Sequential route points for frontend mapping
@@ -25,6 +26,7 @@ public class FindResponse {
         this.stops = stops;
         this.encodedPolyline = null;
         this.routeSequence = new ArrayList<>();
+        this.finalSOCAtDestination = null;
     }
 
     @Data
@@ -36,6 +38,8 @@ public class FindResponse {
         private Integer deviceId; // Add device_id from ChargePoint API
         private Object rawStationData; // Store the complete raw station data from API
         private List<Object> allRawStations = new ArrayList<>(); // All raw stations found at this search location
+        private Double batteryPercentageOnArrival; // Battery % when reaching this charging station
+        private Double batteryPercentageAfterCharging; // Battery % after charging (90%)
     }
 
     @Data
