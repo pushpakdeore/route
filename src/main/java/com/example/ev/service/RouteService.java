@@ -56,7 +56,7 @@ public class RouteService {
 
         // Initialize route sequence with origin
         response.getRouteSequence().add(new FindResponse.RoutePoint(
-            req.getOrigin().latitude, req.getOrigin().longitude, "origin"
+                req.getOrigin().latitude, req.getOrigin().longitude, "origin"
         ));
 
         // Check if destination is reachable without charging
@@ -76,14 +76,14 @@ public class RouteService {
             if (req.getIntermediates() != null) {
                 for (FindRequest.LatLng intermediate : req.getIntermediates()) {
                     response.getRouteSequence().add(new FindResponse.RoutePoint(
-                        intermediate.latitude, intermediate.longitude, "intermediate"
+                            intermediate.latitude, intermediate.longitude, "intermediate"
                     ));
                 }
             }
 
             // Add destination to route sequence
             response.getRouteSequence().add(new FindResponse.RoutePoint(
-                req.getDestination().latitude, req.getDestination().longitude, "destination"
+                    req.getDestination().latitude, req.getDestination().longitude, "destination"
             ));
 
             return response;
@@ -92,7 +92,7 @@ public class RouteService {
         // Need charging - recursively find charging stations and plan route
         // Track remaining intermediate stops (initially all of them)
         List<FindRequest.LatLng> remainingIntermediates = req.getIntermediates() != null ?
-            new ArrayList<>(req.getIntermediates()) : new ArrayList<>();
+                new ArrayList<>(req.getIntermediates()) : new ArrayList<>();
 
         return findChargingStopsRecursively(req, polyline, effectiveRange, fullRange, response, remainingIntermediates);
     }
@@ -108,9 +108,26 @@ public class RouteService {
         return Math.max(0.0, finalSOC); // Ensure not negative
     }
 
+    // Centralized method for search radius in kilometers based on polyline
+    private double getSearchRadiusKm(List<double[]> polyline) {
+        double maxDistance = 0.0;
+        for (int i = 1; i < polyline.size(); i++) {
+            double[] prev = polyline.get(i - 1);
+            double[] curr = polyline.get(i);
+            double distanceKm = haversineMiles(prev[0], prev[1], curr[0], curr[1]) * KM_PER_MILE;
+            if (distanceKm > maxDistance) {
+                maxDistance = distanceKm;
+            }
+        }
+        return maxDistance < 14.0 ? 14.0 : maxDistance;
+    }
+
     private FindResponse findChargingStopsRecursively(FindRequest req, List<double[]> polyline,
-                                                     double currentEffectiveRange, double fullRange,
-                                                     FindResponse response, List<FindRequest.LatLng> remainingIntermediates) throws Exception {
+                                                      double currentEffectiveRange, double fullRange,
+                                                      FindResponse response, List<FindRequest.LatLng> remainingIntermediates) throws Exception {
+
+        // Calculate search radius once at the beginning and reuse it
+        double searchRadiusKm = getSearchRadiusKm(polyline);
 
         double accumulatedMiles = 0;
         int lastReachableIndex = 0;
@@ -134,7 +151,7 @@ public class RouteService {
                 // Add any intermediate stops we reached before needing to charge
                 for (FindRequest.LatLng reached : reachedIntermediates) {
                     response.getRouteSequence().add(new FindResponse.RoutePoint(
-                        reached.latitude, reached.longitude, "intermediate"
+                            reached.latitude, reached.longitude, "intermediate"
                     ));
                 }
 
@@ -154,16 +171,19 @@ public class RouteService {
                 double batteryPercentageOnArrival = (remainingRangeAtStation / fullRange) * 100.0;
                 // Apply buffer consideration - if we're using effective range, the actual battery % will be higher
 
-                FindResponse.Stop chargingStation = searchForChargingStation(searchPoint[0], searchPoint[1]);
+                FindResponse.Stop chargingStation = searchForChargingStation(searchPoint[0], searchPoint[1], searchRadiusKm);
 
                 if (chargingStation == null) {
                     // No station found, try previous polyline points with distance-based search to avoid gaps
                     // Instead of skipping fixed number of points, skip based on distance to ensure coverage
-                    double searchRadiusKm = 14.0; // Our search radius is 10km (7km half-radius × 2)
+                    System.out.println(searchRadiusKm +"from 1 polyline");// Centralized value
                     double maxGapKm = searchRadiusKm * 0.8; // Allow 80% overlap (8km gaps max)
 
                     double accumulatedDistance = 0;
-                    for (int j = lastReachableIndex - 1; j >= 0 && j >= lastReachableIndex - 300; j--) {
+                    int searchAttempts = 0;
+                    int maxSearchAttempts = 50; // Limit to 4 search attempts
+
+                    for (int j = lastReachableIndex - 1; j >= 0 && searchAttempts < maxSearchAttempts; j--) {
                         double[] currentSearchPoint = polyline.get(j);
                         double[] previousSearchPoint = polyline.get(j + 1);
 
@@ -174,11 +194,17 @@ public class RouteService {
 
                         // Only search if we've moved far enough to avoid too much overlap
                         if (accumulatedDistance >= maxGapKm) {
-                            chargingStation = searchForChargingStation(currentSearchPoint[0], currentSearchPoint[1]);
+                            searchAttempts++; // Increment search attempts counter
+                            System.out.println("Search attempt " + searchAttempts + " of " + maxSearchAttempts);
+                            chargingStation = searchForChargingStation(currentSearchPoint[0], currentSearchPoint[1], searchRadiusKm);
                             if (chargingStation != null) {
                                 break;
                             }
                         }
+                    }
+
+                    if (chargingStation == null) {
+                        System.out.println("No charging station found after " + searchAttempts + " search attempts");
                     }
                 }
 
@@ -187,7 +213,7 @@ public class RouteService {
                     response.setRemainingRangeAfterRoute(0);
                     // Add final destination even if unreachable for route visualization
                     response.getRouteSequence().add(new FindResponse.RoutePoint(
-                        req.getDestination().latitude, req.getDestination().longitude, "destination"
+                            req.getDestination().latitude, req.getDestination().longitude, "destination"
                     ));
                     return response;
                 }
@@ -200,7 +226,7 @@ public class RouteService {
 
                 // Add charging station to route sequence
                 response.getRouteSequence().add(new FindResponse.RoutePoint(
-                    chargingStation.getLat(), chargingStation.getLon(), "charging_station"
+                        chargingStation.getLat(), chargingStation.getLon(), "charging_station"
                 ));
 
                 // Calculate new route from charging station to destination
@@ -248,14 +274,14 @@ public class RouteService {
                     if (remainingIntermediates != null) {
                         for (FindRequest.LatLng intermediate : remainingIntermediates) {
                             response.getRouteSequence().add(new FindResponse.RoutePoint(
-                                intermediate.latitude, intermediate.longitude, "intermediate"
+                                    intermediate.latitude, intermediate.longitude, "intermediate"
                             ));
                         }
                     }
 
                     // Add destination to route sequence
                     response.getRouteSequence().add(new FindResponse.RoutePoint(
-                        req.getDestination().latitude, req.getDestination().longitude, "destination"
+                            req.getDestination().latitude, req.getDestination().longitude, "destination"
                     ));
 
                     return response;
@@ -271,7 +297,7 @@ public class RouteService {
         // Add any remaining intermediate stops that were reached
         for (FindRequest.LatLng reached : reachedIntermediates) {
             response.getRouteSequence().add(new FindResponse.RoutePoint(
-                reached.latitude, reached.longitude, "intermediate"
+                    reached.latitude, reached.longitude, "intermediate"
             ));
         }
 
@@ -279,14 +305,14 @@ public class RouteService {
         if (remainingIntermediates != null) {
             for (FindRequest.LatLng intermediate : remainingIntermediates) {
                 response.getRouteSequence().add(new FindResponse.RoutePoint(
-                    intermediate.latitude, intermediate.longitude, "intermediate"
+                        intermediate.latitude, intermediate.longitude, "intermediate"
                 ));
             }
         }
 
         // Add destination to route sequence
         response.getRouteSequence().add(new FindResponse.RoutePoint(
-            req.getDestination().latitude, req.getDestination().longitude, "destination"
+                req.getDestination().latitude, req.getDestination().longitude, "destination"
         ));
 
         response.setReachableWithoutCharging(true);
@@ -410,9 +436,9 @@ public class RouteService {
         }
     }
 
-    private FindResponse.Stop searchForChargingStation(double lat, double lon) {
-        double halfKm = 7.0; // half of 5 km (so total box = 10 km height × 10 km width)
-
+    private FindResponse.Stop searchForChargingStation(double lat, double lon, double searchRadiusKm) {
+        double halfKm = searchRadiusKm / 2.0; // Use pre-calculated value
+        System.out.println(halfKm + " from pre-calculated search radius");
         // Approximate conversion factors
         double kmPerDegLat = 110.574; // ~ km per degree latitude
         double kmPerDegLon = 111.320 * Math.cos(Math.toRadians(lat)); // ~ km per degree longitude at this latitude
@@ -479,7 +505,7 @@ public class RouteService {
                 double stationLon = firstStation.path("lon").asDouble(firstStation.path("longitude").asDouble());
                 String stationName = firstStation.path("name").asText(
                         firstStation.path("station_name").asText(
-                            firstStation.path("name1").asText("ChargePoint Station")
+                                firstStation.path("name1").asText("ChargePoint Station")
                         )
                 );
                 Integer deviceId = firstStation.path("device_id").asInt(0);
